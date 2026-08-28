@@ -23,4 +23,7 @@ module.exports = {
     .split(',')
     .map((id) => id.trim())
     .filter(Boolean),
+  // Optional: DM command-editing agent. Both must be set to enable it.
+  ownerId: process.env.OWNER_ID || null,
+  geminiApiKey: process.env.GEMINI_API_KEY || null,
 };

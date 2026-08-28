@@ -23,7 +23,4 @@ module.exports = {
     .split(',')
     .map((id) => id.trim())
     .filter(Boolean),
-  // Optional: DM command-editing agent. Both must be set to enable it.
-  ownerId: process.env.OWNER_ID || null,
-  anthropicApiKey: process.env.ANTHROPIC_API_KEY || null,
 };

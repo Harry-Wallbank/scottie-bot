@@ -150,9 +150,22 @@ async function handleDm(message) {
   }
 }
 
+async function generateWithRetry(request) {
+  const delays = [1000, 3000, 7000];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await model.generateContent(request);
+    } catch (error) {
+      const retryable = error.status === 503 || error.status === 429;
+      if (!retryable || attempt >= delays.length) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    }
+  }
+}
+
 async function runAgentTurn(message, session) {
   for (let step = 0; step < 8; step++) {
-    const result = await model.generateContent({ contents: session.history });
+    const result = await generateWithRetry({ contents: session.history });
     const candidate = result.response.candidates?.[0];
     const parts = candidate?.content?.parts || [];
 

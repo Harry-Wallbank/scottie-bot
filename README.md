@@ -92,6 +92,12 @@ Three things grant access to `/tarkov`, checked in this order by [`src/lib/permi
 
 Dynamic grants are stored in `src/data/tarkovAccess.json` (created automatically, git-ignored — same pattern as the reaction-role store). All three `tarkov-access` subcommands are gated by the same *Manage Roles* permission as the rest of `/role`.
 
+### DMing the bot to create/tweak commands
+
+Set `OWNER_ID` (your Discord user ID) and `ANTHROPIC_API_KEY` in `.env`, and enable the **Message Content Intent** for this application in the Developer Portal's **Bot** tab (required for the bot to read DM text at all — the bot won't log in without it once these env vars trigger the extra gateway intents).
+
+DM the bot anything describing a new command or a change to an existing one. Claude reads the relevant files under `src/commands/` and `src/lib/` for context, then replies with an explanation and the full proposed file content. Nothing is written until you reply **yes** — reply **no** to cancel instead. On confirmation the file is written, hot-reloaded into the running bot (no restart), re-registered with Discord, and committed + pushed to GitHub so the server and repo stay in sync. See [`src/lib/dmAgent.js`](src/lib/dmAgent.js).
+
 ### Automatic fallback when Tarkov.dev's GraphQL API is down
 
 `api.tarkov.dev`'s GraphQL endpoint has an active, ongoing outage (tracked at

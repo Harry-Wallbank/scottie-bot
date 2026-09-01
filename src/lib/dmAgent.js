@@ -121,6 +121,24 @@ async function handleDm(message) {
     sessions.set(channelId, session);
   }
 
+  // A real slash command never arrives here as plain text - Discord sends it
+  // as an Interaction the moment it's picked from the "/" autocomplete menu,
+  // which goes through interactionCreate, not messageCreate. Text starting
+  // with "/" landing here means the picker didn't offer it (or wasn't used),
+  // so don't burn a Gemini call on what's almost certainly a slash command
+  // attempt gone wrong.
+  if (!session.pending && /^\/\S/.test(text)) {
+    const names = fs
+      .readdirSync(COMMANDS_DIR)
+      .filter((f) => f.endsWith('.js'))
+      .map((f) => `\`/${path.basename(f, '.js')}\``)
+      .join(', ');
+    await message.reply(
+      `That looks like a slash command, not a request for me - type "/" in this DM and pick it from Discord's own menu instead of sending it as text. Available: ${names}\n\n(Still talking to the agent? Start your message with something other than "/".)`
+    );
+    return;
+  }
+
   if (session.pending) {
     const lc = text.toLowerCase();
     if (['yes', 'y', 'confirm'].includes(lc)) {

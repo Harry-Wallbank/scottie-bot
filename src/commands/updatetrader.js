@@ -13,7 +13,7 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('updatetrader')
     .setDescription('Manually update your player/trader levels for /metabuild, ahead of the daily reconfirm')
-    .setDMPermission(false),
+    .setDMPermission(true),
 
   async execute(interaction) {
     const token = `${interaction.user.id}-${Date.now()}`;

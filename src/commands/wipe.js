@@ -5,7 +5,7 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('wipe')
     .setDescription('Reset your saved player/trader level for /metabuild after a game wipe or prestige')
-    .setDMPermission(false),
+    .setDMPermission(true),
 
   async execute(interaction) {
     const existed = profileStore.deleteProfile(interaction.user.id);

@@ -22,7 +22,7 @@ module.exports = {
   data: new SlashCommandBuilder()
     .setName('metabuild')
     .setDescription('Greedy per-slot ergonomics/recoil optimizer for a weapon')
-    .setDMPermission(false)
+    .setDMPermission(true)
     .addStringOption((opt) =>
       opt.setName('weapon').setDescription('Weapon name, e.g. M4A1').setRequired(true).setAutocomplete(true)
     )

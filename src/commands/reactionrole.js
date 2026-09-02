@@ -112,7 +112,7 @@ module.exports = {
       }
     }
 
-    setMessageRoles(message.id, mapping);
+    setMessageRoles(message.id, channel.id, mapping);
 
     const summary =
       failedEmoji.length > 0

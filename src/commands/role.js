@@ -298,7 +298,7 @@ async function handleCreate(interaction, sub) {
     return;
   }
 
-  setMessageRoles(message.id, { [parseEmojiInput(emojiInput)]: role.id });
+  setMessageRoles(message.id, message.channelId, { [parseEmojiInput(emojiInput)]: role.id });
 
   await interaction.editReply(
     `Created ${role} with ${textChannel} and ${voiceChannel.name}, and posted a message — react with ${emojiInput} there to get the role.`
@@ -323,7 +323,7 @@ async function appendRoleToMessage(interaction, message, role, emojiInput, line,
     return false;
   }
 
-  setMessageRoles(message.id, { ...(getMessageRoles(message.id) || {}), [parseEmojiInput(emojiInput)]: role.id });
+  setMessageRoles(message.id, message.channelId, { ...(getMessageRoles(message.id) || {}), [parseEmojiInput(emojiInput)]: role.id });
   return true;
 }
 
@@ -411,7 +411,7 @@ async function handleEmojiRemove(interaction) {
   const remaining = { ...mapping };
   delete remaining[emojiStoreKey];
   if (Object.keys(remaining).length === 0) removeMessage(message.id);
-  else setMessageRoles(message.id, remaining);
+  else setMessageRoles(message.id, message.channelId, remaining);
 
   if (message.embeds.length > 0) {
     const roleMention = `<@&${role.id}>`;
@@ -426,9 +426,51 @@ async function handleEmojiRemove(interaction) {
   await interaction.editReply(`Removed ${role} from the message. The role itself is unaffected.`);
 }
 
+// A channel counts as "gated on" a role if @everyone is denied ViewChannel
+// and the role is explicitly allowed it - exactly the overwrite pattern
+// createRoleWithChannels() sets up. Must be gathered BEFORE the role is
+// deleted: Discord strips a role's overwrites from every channel the
+// moment it's gone, so there'd be nothing left to match afterward.
+function findChannelsGatedOnRole(guild, roleId) {
+  const everyoneId = guild.roles.everyone.id;
+  return guild.channels.cache.filter((channel) => {
+    if (!channel.permissionOverwrites) return false;
+    const everyoneOverwrite = channel.permissionOverwrites.cache.get(everyoneId);
+    const roleOverwrite = channel.permissionOverwrites.cache.get(roleId);
+    if (!everyoneOverwrite || !roleOverwrite) return false;
+    return everyoneOverwrite.deny.has(PermissionFlagsBits.ViewChannel) && roleOverwrite.allow.has(PermissionFlagsBits.ViewChannel);
+  });
+}
+
+// Strips the line mentioning `role` out of a tracked message's embed and
+// removes the bot's reaction for it. Best-effort: logs and moves on if the
+// channel/message/edit fails (e.g. already deleted, or it's a pre-upgrade
+// entry with no stored channelId), since the role is already gone either way.
+async function stripRoleFromMessage(client, role, { messageId, channelId, emojiKey }) {
+  if (!channelId) return false;
+
+  try {
+    const channel = await client.channels.fetch(channelId);
+    const message = await channel.messages.fetch({ message: messageId, force: true });
+    if (message.embeds.length > 0) {
+      const roleMention = `<@&${role.id}>`;
+      const lines = (message.embeds[0].description || '').split('\n').filter((line) => !line.includes(roleMention));
+      const embed = EmbedBuilder.from(message.embeds[0]).setDescription(lines.join('\n'));
+      await message.edit({ embeds: [embed] });
+    }
+    const reaction = message.reactions.cache.get(emojiKey);
+    if (reaction) await reaction.remove().catch(() => {});
+    return true;
+  } catch (error) {
+    console.error(`Failed to strip deleted role from message ${messageId}:`, error);
+    return false;
+  }
+}
+
 async function handleDeleteRole(interaction) {
   const role = interaction.options.getRole('role', true);
-  const botMember = await interaction.guild.members.fetchMe();
+  const guild = interaction.guild;
+  const botMember = await guild.members.fetchMe();
 
   if (role.position >= botMember.roles.highest.position) {
     await interaction.reply({
@@ -440,6 +482,8 @@ async function handleDeleteRole(interaction) {
 
   await interaction.deferReply({ ephemeral: true });
 
+  const gatedChannels = [...findChannelsGatedOnRole(guild, role.id).values()];
+
   const roleName = role.name;
   try {
     await role.delete(`Deleted by ${interaction.user.tag} via /role delete`);
@@ -449,13 +493,25 @@ async function handleDeleteRole(interaction) {
     return;
   }
 
-  const affectedMessages = removeRoleEverywhere(role.id);
-  const note =
-    affectedMessages.length > 0
-      ? ` It was also removed from ${affectedMessages.length} reaction-role message mapping(s) - the embed text on those wasn't edited, so use \`/role emoji-remove\` beforehand next time to keep the message itself clean.`
-      : '';
+  let deletedChannels = 0;
+  for (const channel of gatedChannels) {
+    try {
+      await channel.delete(`Role "${roleName}" deleted via /role delete`);
+      deletedChannels++;
+    } catch (error) {
+      console.error(`Failed to delete channel ${channel.id} after role delete:`, error);
+    }
+  }
 
-  await interaction.editReply(
-    `Deleted the **${roleName}** role.${note} Note: any private channels gated on it (from \`/role create\`/\`/role emoji\`) are now inaccessible to everyone and were NOT deleted - clean those up manually if needed.`
-  );
+  const affected = removeRoleEverywhere(role.id);
+  let editedMessages = 0;
+  for (const entry of affected) {
+    if (await stripRoleFromMessage(interaction.client, role, entry)) editedMessages++;
+  }
+
+  const parts = [`Deleted the **${roleName}** role.`];
+  if (gatedChannels.length > 0) parts.push(`Deleted ${deletedChannels}/${gatedChannels.length} channel(s) gated on it.`);
+  if (affected.length > 0) parts.push(`Removed it from ${editedMessages}/${affected.length} reaction-role message(s).`);
+
+  await interaction.editReply(parts.join(' '));
 }

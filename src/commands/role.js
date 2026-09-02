@@ -41,11 +41,16 @@ module.exports = {
     .addSubcommand((sub) =>
       sub
         .setName('emoji-add')
-        .setDescription('Create a role/channels and add it to a message previously posted by /role emoji')
+        .setDescription('Add a new or existing role to a message previously posted by /role emoji')
         .addStringOption((opt) => opt.setName('message_id').setDescription('ID of the existing role-emoji message').setRequired(true))
-        .addStringOption((opt) => opt.setName('name').setDescription('Name for the new role and channels').setRequired(true))
         .addStringOption((opt) =>
           opt.setName('emoji').setDescription('Emoji to react with for the role (unicode or custom emoji)').setRequired(true)
+        )
+        .addRoleOption((opt) =>
+          opt.setName('role').setDescription('Use this existing role instead of creating a new one')
+        )
+        .addStringOption((opt) =>
+          opt.setName('name').setDescription('Name for a new role and channels (ignored if "role" is set)')
         )
         .addChannelOption((opt) =>
           opt
@@ -271,11 +276,39 @@ async function handleCreate(interaction, sub) {
   );
 }
 
+// Edits the message's embed to add a line for `role`/`emojiInput`, reacts
+// with the emoji, and merges the mapping into the reaction-role store.
+// Returns true on success; on failure, reports it via editReply and
+// returns false.
+async function appendRoleToMessage(interaction, message, role, emojiInput, line, failurePrefix = '') {
+  const oldDescription = message.embeds[0].description || '';
+  const embed = EmbedBuilder.from(message.embeds[0]).setDescription(`${oldDescription}\n${line}`.trim());
+
+  try {
+    await message.edit({ embeds: [embed] });
+    await message.react(emojiInput);
+  } catch (error) {
+    console.error('Failed to update role-emoji message:', error);
+    const sentence = `${failurePrefix ? 'c' : 'C'}ouldn't update the message (${error.message}). Add the reaction there manually.`;
+    await interaction.editReply(`${failurePrefix}${sentence}`);
+    return false;
+  }
+
+  setMessageRoles(message.id, { ...(getMessageRoles(message.id) || {}), [parseEmojiInput(emojiInput)]: role.id });
+  return true;
+}
+
 async function handleEmojiAdd(interaction) {
   const messageId = interaction.options.getString('message_id', true);
-  const name = interaction.options.getString('name', true).slice(0, 100);
   const emojiInput = interaction.options.getString('emoji', true);
+  const existingRole = interaction.options.getRole('role');
+  const name = interaction.options.getString('name');
   const channel = interaction.options.getChannel('channel') || interaction.channel;
+
+  if (!existingRole && !name) {
+    await interaction.reply({ content: 'Provide either an existing `role` to reuse, or a `name` to create a new one.', ephemeral: true });
+    return;
+  }
 
   const message = await channel.messages.fetch(messageId).catch(() => null);
   if (!message) {
@@ -290,26 +323,31 @@ async function handleEmojiAdd(interaction) {
     return;
   }
 
-  const created = await createRoleWithChannels(interaction, name, 'emoji-add');
+  if (existingRole) {
+    const botMember = await interaction.guild.members.fetchMe();
+    if (existingRole.position >= botMember.roles.highest.position) {
+      await interaction.reply({
+        content: `I can't manage **${existingRole.name}** because it's positioned at or above my highest role. Move my role above it in Server Settings > Roles.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    await interaction.deferReply({ ephemeral: true });
+    const line = `React with ${emojiInput} to get the ${existingRole} role.`;
+    if (!(await appendRoleToMessage(interaction, message, existingRole, emojiInput, line))) return;
+
+    await interaction.editReply(`Added ${existingRole} to the message — react with ${emojiInput} there to get it.`);
+    return;
+  }
+
+  const created = await createRoleWithChannels(interaction, name.slice(0, 100), 'emoji-add');
   if (!created) return;
   const { role, textChannel, voiceChannel } = created;
 
   const line = `React with ${emojiInput} to get the ${role} role and access to ${textChannel} and **${voiceChannel.name}**.`;
-  const oldDescription = message.embeds[0].description || '';
-  const embed = EmbedBuilder.from(message.embeds[0]).setDescription(`${oldDescription}\n${line}`.trim());
-
-  try {
-    await message.edit({ embeds: [embed] });
-    await message.react(emojiInput);
-  } catch (error) {
-    console.error('Failed to update role-emoji message:', error);
-    await interaction.editReply(
-      `Created ${role} with ${textChannel} and ${voiceChannel.name}, but couldn't update the message (${error.message}). Add the reaction there manually.`
-    );
-    return;
-  }
-
-  setMessageRoles(message.id, { ...(getMessageRoles(message.id) || {}), [parseEmojiInput(emojiInput)]: role.id });
+  const failurePrefix = `Created ${role} with ${textChannel} and ${voiceChannel.name}, but `;
+  if (!(await appendRoleToMessage(interaction, message, role, emojiInput, line, failurePrefix))) return;
 
   await interaction.editReply(
     `Created ${role} with ${textChannel} and ${voiceChannel.name}, and added it to the message — react with ${emojiInput} there to get the role.`

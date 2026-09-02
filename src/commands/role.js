@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder } = require('discord.js');
 const tarkovAccessStore = require('../lib/tarkovAccessStore');
-const { setMessageRoles } = require('../lib/reactionRoleStore');
+const { setMessageRoles, getMessageRoles } = require('../lib/reactionRoleStore');
 const { parseEmojiInput } = require('../lib/emoji');
 
 module.exports = {
@@ -38,6 +38,22 @@ module.exports = {
           opt.setName('emoji').setDescription('Emoji to react with for the role (unicode or custom emoji)').setRequired(true)
         )
     )
+    .addSubcommand((sub) =>
+      sub
+        .setName('emoji-add')
+        .setDescription('Create a role/channels and add it to a message previously posted by /role emoji')
+        .addStringOption((opt) => opt.setName('message_id').setDescription('ID of the existing role-emoji message').setRequired(true))
+        .addStringOption((opt) => opt.setName('name').setDescription('Name for the new role and channels').setRequired(true))
+        .addStringOption((opt) =>
+          opt.setName('emoji').setDescription('Emoji to react with for the role (unicode or custom emoji)').setRequired(true)
+        )
+        .addChannelOption((opt) =>
+          opt
+            .setName('channel')
+            .setDescription('Channel the message is in (defaults to this channel)')
+            .addChannelTypes(ChannelType.GuildText)
+        )
+    )
     .addSubcommandGroup((group) =>
       group
         .setName('tarkov-access')
@@ -69,6 +85,11 @@ module.exports = {
 
     if (sub === 'create' || sub === 'emoji') {
       await handleCreate(interaction, sub);
+      return;
+    }
+
+    if (sub === 'emoji-add') {
+      await handleEmojiAdd(interaction);
       return;
     }
 
@@ -148,15 +169,15 @@ function slugify(name) {
   return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100) || 'role';
 }
 
-async function handleCreate(interaction, sub) {
-  const name = interaction.options.getString('name', true).slice(0, 100);
-  const emojiInput = sub === 'emoji' ? interaction.options.getString('emoji', true) : null;
-
+// Shared by /role create, /role emoji, and /role emoji-add. Replies (or
+// defers, on success) itself; returns null after a failure it has already
+// reported, or { role, textChannel, voiceChannel } on success.
+async function createRoleWithChannels(interaction, name, sub) {
   const guild = interaction.guild;
   const botMember = await guild.members.fetchMe();
   if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles) || !botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
     await interaction.reply({ content: "I need both **Manage Roles** and **Manage Channels** permissions to do that.", ephemeral: true });
-    return;
+    return null;
   }
 
   await interaction.deferReply({ ephemeral: true });
@@ -171,7 +192,7 @@ async function handleCreate(interaction, sub) {
   } catch (error) {
     console.error('Failed to create role:', error);
     await interaction.editReply("Couldn't create the role. Check my role position and permissions.");
-    return;
+    return null;
   }
 
   const overwrites = [
@@ -205,8 +226,19 @@ async function handleCreate(interaction, sub) {
     await role.delete('Rolled back: channel creation failed').catch(() => {});
     if (textChannel) await textChannel.delete('Rolled back: voice channel creation failed').catch(() => {});
     await interaction.editReply("Created the role, but couldn't create its channels, so I rolled the role back too. Check my permissions and try again.");
-    return;
+    return null;
   }
+
+  return { role, textChannel, voiceChannel };
+}
+
+async function handleCreate(interaction, sub) {
+  const name = interaction.options.getString('name', true).slice(0, 100);
+  const emojiInput = sub === 'emoji' ? interaction.options.getString('emoji', true) : null;
+
+  const created = await createRoleWithChannels(interaction, name, sub);
+  if (!created) return;
+  const { role, textChannel, voiceChannel } = created;
 
   if (sub === 'create') {
     await interaction.editReply(
@@ -236,5 +268,50 @@ async function handleCreate(interaction, sub) {
 
   await interaction.editReply(
     `Created ${role} with ${textChannel} and ${voiceChannel.name}, and posted a message — react with ${emojiInput} there to get the role.`
+  );
+}
+
+async function handleEmojiAdd(interaction) {
+  const messageId = interaction.options.getString('message_id', true);
+  const name = interaction.options.getString('name', true).slice(0, 100);
+  const emojiInput = interaction.options.getString('emoji', true);
+  const channel = interaction.options.getChannel('channel') || interaction.channel;
+
+  const message = await channel.messages.fetch(messageId).catch(() => null);
+  if (!message) {
+    await interaction.reply({ content: `Couldn't find a message with ID \`${messageId}\` in ${channel}.`, ephemeral: true });
+    return;
+  }
+  if (message.author.id !== interaction.client.user.id || message.embeds.length === 0) {
+    await interaction.reply({
+      content: "That message isn't one of mine with an embed - I can only add to a message posted by `/role emoji` (or `/role emoji-add`).",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const created = await createRoleWithChannels(interaction, name, 'emoji-add');
+  if (!created) return;
+  const { role, textChannel, voiceChannel } = created;
+
+  const line = `React with ${emojiInput} to get the ${role} role and access to ${textChannel} and **${voiceChannel.name}**.`;
+  const oldDescription = message.embeds[0].description || '';
+  const embed = EmbedBuilder.from(message.embeds[0]).setDescription(`${oldDescription}\n${line}`.trim());
+
+  try {
+    await message.edit({ embeds: [embed] });
+    await message.react(emojiInput);
+  } catch (error) {
+    console.error('Failed to update role-emoji message:', error);
+    await interaction.editReply(
+      `Created ${role} with ${textChannel} and ${voiceChannel.name}, but couldn't update the message (${error.message}). Add the reaction there manually.`
+    );
+    return;
+  }
+
+  setMessageRoles(message.id, { ...(getMessageRoles(message.id) || {}), [parseEmojiInput(emojiInput)]: role.id });
+
+  await interaction.editReply(
+    `Created ${role} with ${textChannel} and ${voiceChannel.name}, and added it to the message — react with ${emojiInput} there to get the role.`
   );
 }

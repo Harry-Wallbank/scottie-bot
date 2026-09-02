@@ -310,7 +310,11 @@ async function handleEmojiAdd(interaction) {
     return;
   }
 
-  const message = await channel.messages.fetch(messageId).catch(() => null);
+  // force: true - an unforced fetch can return a stale cached copy of the
+  // message (e.g. from before the last /role emoji-add's edit landed),
+  // and building the new embed off that would silently drop whatever line
+  // was most recently added.
+  const message = await channel.messages.fetch({ message: messageId, force: true }).catch(() => null);
   if (!message) {
     await interaction.reply({ content: `Couldn't find a message with ID \`${messageId}\` in ${channel}.`, ephemeral: true });
     return;

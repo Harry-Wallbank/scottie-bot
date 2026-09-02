@@ -254,7 +254,7 @@ async function handleCreate(interaction, sub) {
 
   const embed = new EmbedBuilder()
     .setTitle(name)
-    .setDescription(`React with ${emojiInput} to get the ${role} role and access to ${textChannel} and **${voiceChannel.name}**.`)
+    .setDescription(`React with ${emojiInput} to get the ${role} role.`)
     .setColor(0x5865f2);
 
   let message;
@@ -349,7 +349,7 @@ async function handleEmojiAdd(interaction) {
   if (!created) return;
   const { role, textChannel, voiceChannel } = created;
 
-  const line = `React with ${emojiInput} to get the ${role} role and access to ${textChannel} and **${voiceChannel.name}**.`;
+  const line = `React with ${emojiInput} to get the ${role} role.`;
   const failurePrefix = `Created ${role} with ${textChannel} and ${voiceChannel.name}, but `;
   if (!(await appendRoleToMessage(interaction, message, role, emojiInput, line, failurePrefix))) return;
 

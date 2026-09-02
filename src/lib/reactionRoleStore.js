@@ -36,4 +36,23 @@ function removeMessage(messageId) {
   save(data);
 }
 
-module.exports = { setMessageRoles, getMessageRoles, removeMessage };
+// Strips a role out of every message mapping that references it (e.g. when
+// the role itself gets deleted). Returns the list of affected message IDs.
+function removeRoleEverywhere(roleId) {
+  const data = load();
+  const affected = [];
+
+  for (const [messageId, mapping] of Object.entries(data)) {
+    const emojiKey = Object.keys(mapping).find((key) => mapping[key] === roleId);
+    if (!emojiKey) continue;
+
+    affected.push(messageId);
+    delete mapping[emojiKey];
+    if (Object.keys(mapping).length === 0) delete data[messageId];
+  }
+
+  if (affected.length > 0) save(data);
+  return affected;
+}
+
+module.exports = { setMessageRoles, getMessageRoles, removeMessage, removeRoleEverywhere };

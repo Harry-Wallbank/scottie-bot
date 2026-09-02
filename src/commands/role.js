@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder } = require('discord.js');
 const tarkovAccessStore = require('../lib/tarkovAccessStore');
-const { setMessageRoles, getMessageRoles } = require('../lib/reactionRoleStore');
+const { setMessageRoles, getMessageRoles, removeMessage, removeRoleEverywhere } = require('../lib/reactionRoleStore');
 const { parseEmojiInput } = require('../lib/emoji');
 
 module.exports = {
@@ -59,6 +59,25 @@ module.exports = {
             .addChannelTypes(ChannelType.GuildText)
         )
     )
+    .addSubcommand((sub) =>
+      sub
+        .setName('emoji-remove')
+        .setDescription("Remove a role's entry from a role-emoji message, without deleting the role")
+        .addStringOption((opt) => opt.setName('message_id').setDescription('ID of the role-emoji message').setRequired(true))
+        .addRoleOption((opt) => opt.setName('role').setDescription('Role to remove from the message').setRequired(true))
+        .addChannelOption((opt) =>
+          opt
+            .setName('channel')
+            .setDescription('Channel the message is in (defaults to this channel)')
+            .addChannelTypes(ChannelType.GuildText)
+        )
+    )
+    .addSubcommand((sub) =>
+      sub
+        .setName('delete')
+        .setDescription('Permanently delete a role from the server')
+        .addRoleOption((opt) => opt.setName('role').setDescription('Role to delete').setRequired(true))
+    )
     .addSubcommandGroup((group) =>
       group
         .setName('tarkov-access')
@@ -95,6 +114,16 @@ module.exports = {
 
     if (sub === 'emoji-add') {
       await handleEmojiAdd(interaction);
+      return;
+    }
+
+    if (sub === 'emoji-remove') {
+      await handleEmojiRemove(interaction);
+      return;
+    }
+
+    if (sub === 'delete') {
+      await handleDeleteRole(interaction);
       return;
     }
 
@@ -355,5 +384,78 @@ async function handleEmojiAdd(interaction) {
 
   await interaction.editReply(
     `Created ${role} with ${textChannel} and ${voiceChannel.name}, and added it to the message — react with ${emojiInput} there to get the role.`
+  );
+}
+
+async function handleEmojiRemove(interaction) {
+  const messageId = interaction.options.getString('message_id', true);
+  const role = interaction.options.getRole('role', true);
+  const channel = interaction.options.getChannel('channel') || interaction.channel;
+
+  const message = await channel.messages.fetch({ message: messageId, force: true }).catch(() => null);
+  if (!message) {
+    await interaction.reply({ content: `Couldn't find a message with ID \`${messageId}\` in ${channel}.`, ephemeral: true });
+    return;
+  }
+
+  const mapping = getMessageRoles(message.id);
+  const entry = mapping && Object.entries(mapping).find(([, roleId]) => roleId === role.id);
+  if (!entry) {
+    await interaction.reply({ content: `${role} isn't on that message.`, ephemeral: true });
+    return;
+  }
+  const [emojiStoreKey] = entry;
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const remaining = { ...mapping };
+  delete remaining[emojiStoreKey];
+  if (Object.keys(remaining).length === 0) removeMessage(message.id);
+  else setMessageRoles(message.id, remaining);
+
+  if (message.embeds.length > 0) {
+    const roleMention = `<@&${role.id}>`;
+    const lines = (message.embeds[0].description || '').split('\n').filter((line) => !line.includes(roleMention));
+    const embed = EmbedBuilder.from(message.embeds[0]).setDescription(lines.join('\n'));
+    await message.edit({ embeds: [embed] }).catch((error) => console.error('Failed to update message after /role emoji-remove:', error));
+  }
+
+  const reaction = message.reactions.cache.get(emojiStoreKey);
+  if (reaction) await reaction.remove().catch((error) => console.error('Failed to remove reaction after /role emoji-remove:', error));
+
+  await interaction.editReply(`Removed ${role} from the message. The role itself is unaffected.`);
+}
+
+async function handleDeleteRole(interaction) {
+  const role = interaction.options.getRole('role', true);
+  const botMember = await interaction.guild.members.fetchMe();
+
+  if (role.position >= botMember.roles.highest.position) {
+    await interaction.reply({
+      content: `I can't manage **${role.name}** because it's positioned at or above my highest role. Move my role above it in Server Settings > Roles.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const roleName = role.name;
+  try {
+    await role.delete(`Deleted by ${interaction.user.tag} via /role delete`);
+  } catch (error) {
+    console.error('Failed to delete role:', error);
+    await interaction.editReply("Couldn't delete that role. Check my permissions and role position.");
+    return;
+  }
+
+  const affectedMessages = removeRoleEverywhere(role.id);
+  const note =
+    affectedMessages.length > 0
+      ? ` It was also removed from ${affectedMessages.length} reaction-role message mapping(s) - the embed text on those wasn't edited, so use \`/role emoji-remove\` beforehand next time to keep the message itself clean.`
+      : '';
+
+  await interaction.editReply(
+    `Deleted the **${roleName}** role.${note} Note: any private channels gated on it (from \`/role create\`/\`/role emoji\`) are now inaccessible to everyone and were NOT deleted - clean those up manually if needed.`
   );
 }

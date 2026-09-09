@@ -314,10 +314,10 @@ async function applyPending(message, session) {
 function commitAndPush(filename, verb) {
   const env = {
     ...process.env,
-    GIT_AUTHOR_NAME: 'Tarkov Bot DM Agent',
-    GIT_AUTHOR_EMAIL: 'bot@tarkov-bot.local',
-    GIT_COMMITTER_NAME: 'Tarkov Bot DM Agent',
-    GIT_COMMITTER_EMAIL: 'bot@tarkov-bot.local',
+    GIT_AUTHOR_NAME: 'Scottie Bot DM Agent',
+    GIT_AUTHOR_EMAIL: 'bot@scottie-bot.local',
+    GIT_COMMITTER_NAME: 'Scottie Bot DM Agent',
+    GIT_COMMITTER_EMAIL: 'bot@scottie-bot.local',
   };
   const relPath = path.join('src', 'commands', filename);
   execFileSync('git', ['add', relPath], { cwd: REPO_ROOT, env });

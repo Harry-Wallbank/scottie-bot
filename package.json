@@ -1,5 +1,5 @@
 {
-  "name": "tarkov-bot",
+  "name": "scottie-bot",
   "version": "1.0.0",
   "description": "Discord bot for role management and Tarkov.dev / Tarkov Wiki lookups",
   "main": "src/index.js",

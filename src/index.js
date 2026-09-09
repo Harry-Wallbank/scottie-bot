@@ -3,6 +3,7 @@ const path = require('node:path');
 const { Client, Collection, GatewayIntentBits, Partials } = require('discord.js');
 const config = require('./config');
 const { startDailyHealthCheck } = require('./lib/tarkovApiHealth');
+const { startMetricsServer } = require('./lib/metrics');
 
 const client = new Client({
   intents: [
@@ -36,3 +37,4 @@ for (const file of fs.readdirSync(eventsPath).filter((f) => f.endsWith('.js'))) 
 client.login(config.token);
 
 startDailyHealthCheck();
+startMetricsServer();

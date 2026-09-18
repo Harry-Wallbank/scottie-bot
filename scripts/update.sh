@@ -11,8 +11,8 @@ git merge --ff-only origin/master
 
 echo "==> Building and restarting container"
 cd ~/docker
-docker compose build bot
-docker compose up -d bot
+docker compose build scottie-bot
+docker compose up -d scottie-bot
 
 echo "==> Done. Current commit:"
 cd - > /dev/null

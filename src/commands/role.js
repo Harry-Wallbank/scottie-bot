@@ -1,7 +1,9 @@
 const { SlashCommandBuilder, PermissionFlagsBits, ChannelType, EmbedBuilder } = require('discord.js');
 const tarkovAccessStore = require('../lib/tarkovAccessStore');
-const { setMessageRoles, getMessageRoles, removeMessage, removeRoleEverywhere } = require('../lib/reactionRoleStore');
+const { setMessageRoles, getMessageRoles, getMessageChannelId, removeMessage, removeRoleEverywhere } = require('../lib/reactionRoleStore');
 const { parseEmojiInput } = require('../lib/emoji');
+
+const { REACTION_ROLE_HEADER } = require('../lib/reactionRoleText');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -188,330 +190,307 @@ async function handleTarkovAccess(interaction) {
     if (role) tarkovAccessStore.addRole(role.id);
     if (user) tarkovAccessStore.addUser(user.id);
     await interaction.reply({ content: `Granted /tarkov access to ${targets}.`, ephemeral: true });
-    return;
+  } else {
+    if (role) tarkovAccessStore.removeRole(role.id);
+    if (user) tarkovAccessStore.removeUser(user.id);
+    await interaction.reply({ content: `Revoked /tarkov access from ${targets}.`, ephemeral: true });
   }
-
-  if (role) tarkovAccessStore.removeRole(role.id);
-  if (user) tarkovAccessStore.removeUser(user.id);
-  await interaction.reply({ content: `Revoked /tarkov access from ${targets}.`, ephemeral: true });
 }
 
-// Discord requires GuildText channel names to be lowercase with only
-// alphanumerics/hyphens/underscores; voice channel names have no such
-// restriction, so only the text channel needs slugifying.
-function slugify(name) {
-  return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100) || 'role';
-}
+async function createRoleAndChannels(guild, name) {
+  const role = await guild.roles.create({
+    name: name,
+    reason: 'Created via /role',
+  });
 
-// Shared by /role create, /role emoji, and /role emoji-add. Replies (or
-// defers, on success) itself; returns null after a failure it has already
-// reported, or { role, textChannel, voiceChannel } on success.
-async function createRoleWithChannels(interaction, name, sub) {
-  const guild = interaction.guild;
-  const botMember = await guild.members.fetchMe();
-  if (!botMember.permissions.has(PermissionFlagsBits.ManageRoles) || !botMember.permissions.has(PermissionFlagsBits.ManageChannels)) {
-    await interaction.reply({ content: "I need both **Manage Roles** and **Manage Channels** permissions to do that.", ephemeral: true });
-    return null;
-  }
+  const category = await guild.channels.create({
+    name: name,
+    type: ChannelType.GuildCategory,
+    permissionOverwrites: [
+      {
+        id: guild.roles.everyone.id,
+        deny: [PermissionFlagsBits.ViewChannel],
+      },
+      {
+        id: role.id,
+        allow: [PermissionFlagsBits.ViewChannel],
+      },
+    ],
+  });
 
-  await interaction.deferReply({ ephemeral: true });
+  await guild.channels.create({
+    name: name.toLowerCase().replace(/\s+/g, '-'),
+    type: ChannelType.GuildText,
+    parent: category.id,
+  });
 
-  let role;
-  try {
-    role = await guild.roles.create({
-      name,
-      permissions: [],
-      reason: `Created by ${interaction.user.tag} via /role ${sub}`,
-    });
-  } catch (error) {
-    console.error('Failed to create role:', error);
-    await interaction.editReply("Couldn't create the role. Check my role position and permissions.");
-    return null;
-  }
+  await guild.channels.create({
+    name: `${name} Voice`,
+    type: ChannelType.GuildVoice,
+    parent: category.id,
+  });
 
-  const overwrites = [
-    { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
-    { id: botMember.id, allow: [PermissionFlagsBits.ViewChannel] },
-  ];
-
-  let textChannel;
-  let voiceChannel;
-  try {
-    textChannel = await guild.channels.create({
-      name: slugify(name),
-      type: ChannelType.GuildText,
-      reason: `Created by ${interaction.user.tag} via /role ${sub}`,
-      permissionOverwrites: [
-        ...overwrites,
-        { id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory] },
-      ],
-    });
-    voiceChannel = await guild.channels.create({
-      name,
-      type: ChannelType.GuildVoice,
-      reason: `Created by ${interaction.user.tag} via /role ${sub}`,
-      permissionOverwrites: [
-        ...overwrites,
-        { id: role.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.Connect, PermissionFlagsBits.Speak] },
-      ],
-    });
-  } catch (error) {
-    console.error('Failed to create role channels:', error);
-    await role.delete('Rolled back: channel creation failed').catch(() => {});
-    if (textChannel) await textChannel.delete('Rolled back: voice channel creation failed').catch(() => {});
-    await interaction.editReply("Created the role, but couldn't create its channels, so I rolled the role back too. Check my permissions and try again.");
-    return null;
-  }
-
-  return { role, textChannel, voiceChannel };
+  return { role, category };
 }
 
 async function handleCreate(interaction, sub) {
-  const name = interaction.options.getString('name', true).slice(0, 100);
-  const emojiInput = sub === 'emoji' ? interaction.options.getString('emoji', true) : null;
-
-  const created = await createRoleWithChannels(interaction, name, sub);
-  if (!created) return;
-  const { role, textChannel, voiceChannel } = created;
+  const name = interaction.options.getString('name', true);
+  const guild = interaction.guild;
 
   if (sub === 'create') {
-    await interaction.editReply(
-      `Created ${role} with ${textChannel} and ${voiceChannel.name} — only members with that role can see either channel. Use \`/role add\` to grant it.`
-    );
+    const created = await createRoleAndChannels(guild, name);
+    await interaction.reply({
+      content: `Created role **${created.role.name}** and private channels.`,
+      ephemeral: true,
+    });
     return;
   }
 
+  const emojiInput = interaction.options.getString('emoji', true);
+  const created = await createRoleAndChannels(guild, name);
+  const role = created.role;
+
+  const botMember = await guild.members.fetchMe();
+  if (role.position >= botMember.roles.highest.position) {
+    await interaction.reply({
+      content: `Created role **${role.name}**, but I cannot manage it because it is above my highest role.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const line = `${REACTION_ROLE_HEADER}\n${emojiInput} - ${role}`;
   const embed = new EmbedBuilder()
-    .setTitle(name)
-    .setDescription(`React with ${emojiInput} to get the ${role} role.`)
+    .setTitle(`Role: ${role.name}`)
+    .setDescription(line)
     .setColor(0x5865f2);
 
-  let message;
+  const message = await interaction.channel.send({ embeds: [embed] });
+
+  const emojiKeyStr = parseEmojiInput(emojiInput);
   try {
-    message = await interaction.channel.send({ embeds: [embed] });
     await message.react(emojiInput);
   } catch (error) {
-    console.error('Failed to post/react to role-emoji message:', error);
-    await interaction.editReply(
-      `Created ${role} with ${textChannel} and ${voiceChannel.name}, but couldn't post or react to the emoji message (${error.message}). Set one up manually with \`/reactionrole create\`.`
-    );
-    return;
+    console.error(`Failed to react with ${emojiInput}:`, error);
   }
 
-  setMessageRoles(message.id, message.channelId, { [parseEmojiInput(emojiInput)]: role.id });
+  setMessageRoles(message.id, interaction.channel.id, { [emojiKeyStr]: role.id });
 
-  await interaction.editReply(
-    `Created ${role} with ${textChannel} and ${voiceChannel.name}, and posted a message — react with ${emojiInput} there to get the role.`
-  );
-}
-
-// Edits the message's embed to add a line for `role`/`emojiInput`, reacts
-// with the emoji, and merges the mapping into the reaction-role store.
-// Returns true on success; on failure, reports it via editReply and
-// returns false.
-async function appendRoleToMessage(interaction, message, role, emojiInput, line, failurePrefix = '') {
-  const oldDescription = message.embeds[0].description || '';
-  const embed = EmbedBuilder.from(message.embeds[0]).setDescription(`${oldDescription}\n${line}`.trim());
-
-  try {
-    await message.edit({ embeds: [embed] });
-    await message.react(emojiInput);
-  } catch (error) {
-    console.error('Failed to update role-emoji message:', error);
-    const sentence = `${failurePrefix ? 'c' : 'C'}ouldn't update the message (${error.message}). Add the reaction there manually.`;
-    await interaction.editReply(`${failurePrefix}${sentence}`);
-    return false;
-  }
-
-  setMessageRoles(message.id, message.channelId, { ...(getMessageRoles(message.id) || {}), [parseEmojiInput(emojiInput)]: role.id });
-  return true;
+  await interaction.reply({
+    content: `Created role **${role.name}**, private channels, and posted reaction-role message in ${interaction.channel}.`,
+    ephemeral: true,
+  });
 }
 
 async function handleEmojiAdd(interaction) {
   const messageId = interaction.options.getString('message_id', true);
   const emojiInput = interaction.options.getString('emoji', true);
-  const existingRole = interaction.options.getRole('role');
-  const name = interaction.options.getString('name');
-  const channel = interaction.options.getChannel('channel') || interaction.channel;
+  const roleOption = interaction.options.getRole('role');
+  const nameOption = interaction.options.getString('name');
+  const channelOption = interaction.options.getChannel('channel') || interaction.channel;
 
-  if (!existingRole && !name) {
-    await interaction.reply({ content: 'Provide either an existing `role` to reuse, or a `name` to create a new one.', ephemeral: true });
-    return;
-  }
-
-  // force: true - an unforced fetch can return a stale cached copy of the
-  // message (e.g. from before the last /role emoji-add's edit landed),
-  // and building the new embed off that would silently drop whatever line
-  // was most recently added.
-  const message = await channel.messages.fetch({ message: messageId, force: true }).catch(() => null);
-  if (!message) {
-    await interaction.reply({ content: `Couldn't find a message with ID \`${messageId}\` in ${channel}.`, ephemeral: true });
-    return;
-  }
-  if (message.author.id !== interaction.client.user.id || message.embeds.length === 0) {
+  if (!roleOption && !nameOption) {
     await interaction.reply({
-      content: "That message isn't one of mine with an embed - I can only add to a message posted by `/role emoji` (or `/role emoji-add`).",
+      content: 'You must specify either an existing `role` or a `name` for a new role.',
       ephemeral: true,
     });
     return;
   }
 
-  if (existingRole) {
-    const botMember = await interaction.guild.members.fetchMe();
-    if (existingRole.position >= botMember.roles.highest.position) {
-      await interaction.reply({
-        content: `I can't manage **${existingRole.name}** because it's positioned at or above my highest role. Move my role above it in Server Settings > Roles.`,
-        ephemeral: true,
-      });
-      return;
+  const guild = interaction.guild;
+  let targetChannel = channelOption;
+
+  let targetMessage;
+  try {
+    targetMessage = await targetChannel.messages.fetch(messageId);
+  } catch (error) {
+    const storedChannelId = getMessageChannelId(messageId);
+    if (storedChannelId && storedChannelId !== targetChannel.id) {
+      const fetchedChannel = await guild.channels.fetch(storedChannelId).catch(() => null);
+      if (fetchedChannel) {
+        targetChannel = fetchedChannel;
+        targetMessage = await targetChannel.messages.fetch(messageId).catch(() => null);
+      }
     }
+  }
 
-    await interaction.deferReply({ ephemeral: true });
-    const line = `React with ${emojiInput} to get the ${existingRole} role.`;
-    if (!(await appendRoleToMessage(interaction, message, existingRole, emojiInput, line))) return;
-
-    await interaction.editReply(`Added ${existingRole} to the message — react with ${emojiInput} there to get it.`);
+  if (!targetMessage) {
+    await interaction.reply({
+      content: `Could not find message \`${messageId}\` in ${targetChannel}. Make sure the message ID and channel are correct.`,
+      ephemeral: true,
+    });
     return;
   }
 
-  const created = await createRoleWithChannels(interaction, name.slice(0, 100), 'emoji-add');
-  if (!created) return;
-  const { role, textChannel, voiceChannel } = created;
+  let role = roleOption;
+  let createdChannelsNote = '';
 
-  const line = `React with ${emojiInput} to get the ${role} role.`;
-  const failurePrefix = `Created ${role} with ${textChannel} and ${voiceChannel.name}, but `;
-  if (!(await appendRoleToMessage(interaction, message, role, emojiInput, line, failurePrefix))) return;
+  if (!role) {
+    const created = await createRoleAndChannels(guild, nameOption);
+    role = created.role;
+    createdChannelsNote = ` Created new role **${role.name}** and channel category.`;
+  }
 
-  await interaction.editReply(
-    `Created ${role} with ${textChannel} and ${voiceChannel.name}, and added it to the message — react with ${emojiInput} there to get the role.`
-  );
+  const botMember = await guild.members.fetchMe();
+  if (role.position >= botMember.roles.highest.position) {
+    await interaction.reply({
+      content: `I can't manage **${role.name}** because it's positioned at or above my highest role.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const newLine = `${emojiInput} - ${role}`;
+
+  let embed = targetMessage.embeds[0] ? EmbedBuilder.from(targetMessage.embeds[0]) : new EmbedBuilder().setColor(0x5865f2);
+  let lines = embed.data.description ? embed.data.description.split('\n').filter(Boolean) : [];
+
+  let found = false;
+  lines = lines.map((line) => {
+    if (line.includes(`<@&${role.id}>`) || line.startsWith(emojiInput)) {
+      found = true;
+      return newLine;
+    }
+    const match = line.match(/^(\S+)\s*(?:—|-)\s*(<@&\d+>)(?:\s*(?:—|-)\s*".*")?/);
+    if (match) {
+      return `${match[1]} - ${match[2]}`;
+    }
+    return line;
+  });
+
+  if (!found) {
+    lines.push(newLine);
+  }
+
+  embed.setDescription(lines.join('\n'));
+
+  try {
+    await targetMessage.edit({ embeds: [embed] });
+  } catch (error) {
+    console.error('Failed to edit reaction-role message:', error);
+    await interaction.reply({
+      content: 'Failed to update the message embed. Check my permissions.',
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const emojiKeyStr = parseEmojiInput(emojiInput);
+  try {
+    await targetMessage.react(emojiInput);
+  } catch (error) {
+    console.error(`Failed to react with ${emojiInput}:`, error);
+  }
+
+  const existingRoles = getMessageRoles(messageId) || {};
+  existingRoles[emojiKeyStr] = role.id;
+  setMessageRoles(messageId, targetChannel.id, existingRoles);
+
+  await interaction.reply({
+    content: `Added ${emojiInput} for **${role.name}** to message \`${messageId}\` in ${targetChannel}.${createdChannelsNote}`,
+    ephemeral: true,
+  });
 }
 
 async function handleEmojiRemove(interaction) {
   const messageId = interaction.options.getString('message_id', true);
   const role = interaction.options.getRole('role', true);
-  const channel = interaction.options.getChannel('channel') || interaction.channel;
-
-  const message = await channel.messages.fetch({ message: messageId, force: true }).catch(() => null);
-  if (!message) {
-    await interaction.reply({ content: `Couldn't find a message with ID \`${messageId}\` in ${channel}.`, ephemeral: true });
-    return;
-  }
-
-  const mapping = getMessageRoles(message.id);
-  const entry = mapping && Object.entries(mapping).find(([, roleId]) => roleId === role.id);
-  if (!entry) {
-    await interaction.reply({ content: `${role} isn't on that message.`, ephemeral: true });
-    return;
-  }
-  const [emojiStoreKey] = entry;
-
-  await interaction.deferReply({ ephemeral: true });
-
-  const remaining = { ...mapping };
-  delete remaining[emojiStoreKey];
-  if (Object.keys(remaining).length === 0) removeMessage(message.id);
-  else setMessageRoles(message.id, message.channelId, remaining);
-
-  if (message.embeds.length > 0) {
-    const roleMention = `<@&${role.id}>`;
-    const lines = (message.embeds[0].description || '').split('\n').filter((line) => !line.includes(roleMention));
-    const embed = EmbedBuilder.from(message.embeds[0]).setDescription(lines.join('\n'));
-    await message.edit({ embeds: [embed] }).catch((error) => console.error('Failed to update message after /role emoji-remove:', error));
-  }
-
-  const reaction = message.reactions.cache.get(emojiStoreKey);
-  if (reaction) await reaction.remove().catch((error) => console.error('Failed to remove reaction after /role emoji-remove:', error));
-
-  await interaction.editReply(`Removed ${role} from the message. The role itself is unaffected.`);
-}
-
-// A channel counts as "gated on" a role if @everyone is denied ViewChannel
-// and the role is explicitly allowed it - exactly the overwrite pattern
-// createRoleWithChannels() sets up. Must be gathered BEFORE the role is
-// deleted: Discord strips a role's overwrites from every channel the
-// moment it's gone, so there'd be nothing left to match afterward.
-function findChannelsGatedOnRole(guild, roleId) {
-  const everyoneId = guild.roles.everyone.id;
-  return guild.channels.cache.filter((channel) => {
-    if (!channel.permissionOverwrites) return false;
-    const everyoneOverwrite = channel.permissionOverwrites.cache.get(everyoneId);
-    const roleOverwrite = channel.permissionOverwrites.cache.get(roleId);
-    if (!everyoneOverwrite || !roleOverwrite) return false;
-    return everyoneOverwrite.deny.has(PermissionFlagsBits.ViewChannel) && roleOverwrite.allow.has(PermissionFlagsBits.ViewChannel);
-  });
-}
-
-// Strips the line mentioning `role` out of a tracked message's embed and
-// removes the bot's reaction for it. Best-effort: logs and moves on if the
-// channel/message/edit fails (e.g. already deleted, or it's a pre-upgrade
-// entry with no stored channelId), since the role is already gone either way.
-async function stripRoleFromMessage(client, role, { messageId, channelId, emojiKey }) {
-  if (!channelId) return false;
-
-  try {
-    const channel = await client.channels.fetch(channelId);
-    const message = await channel.messages.fetch({ message: messageId, force: true });
-    if (message.embeds.length > 0) {
-      const roleMention = `<@&${role.id}>`;
-      const lines = (message.embeds[0].description || '').split('\n').filter((line) => !line.includes(roleMention));
-      const embed = EmbedBuilder.from(message.embeds[0]).setDescription(lines.join('\n'));
-      await message.edit({ embeds: [embed] });
-    }
-    const reaction = message.reactions.cache.get(emojiKey);
-    if (reaction) await reaction.remove().catch(() => {});
-    return true;
-  } catch (error) {
-    console.error(`Failed to strip deleted role from message ${messageId}:`, error);
-    return false;
-  }
-}
-
-async function handleDeleteRole(interaction) {
-  const role = interaction.options.getRole('role', true);
+  const channelOption = interaction.options.getChannel('channel') || interaction.channel;
   const guild = interaction.guild;
-  const botMember = await guild.members.fetchMe();
 
-  if (role.position >= botMember.roles.highest.position) {
+  let targetChannel = channelOption;
+  let targetMessage;
+  try {
+    targetMessage = await targetChannel.messages.fetch(messageId);
+  } catch (error) {
+    const storedChannelId = getMessageChannelId(messageId);
+    if (storedChannelId && storedChannelId !== targetChannel.id) {
+      const fetchedChannel = await guild.channels.fetch(storedChannelId).catch(() => null);
+      if (fetchedChannel) {
+        targetChannel = fetchedChannel;
+        targetMessage = await targetChannel.messages.fetch(messageId).catch(() => null);
+      }
+    }
+  }
+
+  if (!targetMessage) {
     await interaction.reply({
-      content: `I can't manage **${role.name}** because it's positioned at or above my highest role. Move my role above it in Server Settings > Roles.`,
+      content: `Could not find message \`${messageId}\` in ${targetChannel}.`,
       ephemeral: true,
     });
     return;
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  const existingRoles = getMessageRoles(messageId) || {};
+  const emojiKeyToRemove = Object.keys(existingRoles).find((key) => existingRoles[key] === role.id);
 
-  const gatedChannels = [...findChannelsGatedOnRole(guild, role.id).values()];
+  if (emojiKeyToRemove) {
+    delete existingRoles[emojiKeyToRemove];
+    setMessageRoles(messageId, targetChannel.id, existingRoles);
+  }
+
+  if (targetMessage.embeds[0]) {
+    const embed = EmbedBuilder.from(targetMessage.embeds[0]);
+    if (embed.data.description) {
+      const lines = embed.data.description
+        .split('\n')
+        .filter((line) => !line.includes(`<@&${role.id}>`));
+      embed.setDescription(lines.join('\n'));
+      await targetMessage.edit({ embeds: [embed] }).catch(() => null);
+    }
+  }
+
+  await interaction.reply({
+    content: `Removed **${role.name}** from message \`${messageId}\`.`,
+    ephemeral: true,
+  });
+}
+
+async function handleDeleteRole(interaction) {
+  const role = interaction.options.getRole('role', true);
+  const guild = interaction.guild;
+
+  const botMember = await guild.members.fetchMe();
+  if (role.position >= botMember.roles.highest.position) {
+    await interaction.reply({
+      content: `I can't delete **${role.name}** because it's positioned at or above my highest role.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const affectedMessages = removeRoleEverywhere(role.id);
+
+  for (const item of affectedMessages) {
+    if (!item.channelId) continue;
+    try {
+      const channel = await guild.channels.fetch(item.channelId);
+      if (channel && channel.isTextBased()) {
+        const msg = await channel.messages.fetch(item.messageId);
+        if (msg && msg.embeds[0]) {
+          const embed = EmbedBuilder.from(msg.embeds[0]);
+          if (embed.data.description) {
+            const lines = embed.data.description
+              .split('\n')
+              .filter((line) => !line.includes(`<@&${role.id}>`));
+            embed.setDescription(lines.join('\n'));
+            await msg.edit({ embeds: [embed] });
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`Failed to update message ${item.messageId} after role deletion:`, err);
+    }
+  }
 
   const roleName = role.name;
   try {
     await role.delete(`Deleted by ${interaction.user.tag} via /role delete`);
   } catch (error) {
     console.error('Failed to delete role:', error);
-    await interaction.editReply("Couldn't delete that role. Check my permissions and role position.");
+    await interaction.reply({ content: `Failed to delete role **${roleName}**.`, ephemeral: true });
     return;
   }
 
-  let deletedChannels = 0;
-  for (const channel of gatedChannels) {
-    try {
-      await channel.delete(`Role "${roleName}" deleted via /role delete`);
-      deletedChannels++;
-    } catch (error) {
-      console.error(`Failed to delete channel ${channel.id} after role delete:`, error);
-    }
-  }
-
-  const affected = removeRoleEverywhere(role.id);
-  let editedMessages = 0;
-  for (const entry of affected) {
-    if (await stripRoleFromMessage(interaction.client, role, entry)) editedMessages++;
-  }
-
-  const parts = [`Deleted the **${roleName}** role.`];
-  if (gatedChannels.length > 0) parts.push(`Deleted ${deletedChannels}/${gatedChannels.length} channel(s) gated on it.`);
-  if (affected.length > 0) parts.push(`Removed it from ${editedMessages}/${affected.length} reaction-role message(s).`);
-
-  await interaction.editReply(parts.join(' '));
+  await interaction.reply({ content: `Deleted role **${roleName}**.`, ephemeral: true });
 }

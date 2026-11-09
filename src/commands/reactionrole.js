@@ -1,6 +1,7 @@
 const { SlashCommandBuilder, PermissionFlagsBits, EmbedBuilder, ChannelType } = require('discord.js');
 const { setMessageRoles, removeMessage } = require('../lib/reactionRoleStore');
 const { parseEmojiInput } = require('../lib/emoji');
+const { REACTION_ROLE_HEADER } = require('../lib/reactionRoleText');
 
 const MAX_PAIRS = 5;
 
@@ -88,7 +89,7 @@ module.exports = {
 
     const embed = new EmbedBuilder()
       .setTitle(title)
-      .setDescription(pairs.map((p) => `${p.emojiInput} — ${p.role}`).join('\n'))
+      .setDescription(`${REACTION_ROLE_HEADER}\n${pairs.map((p) => `${p.emojiInput} - ${p.role}`).join('\n')}`)
       .setColor(0x5865f2);
 
     let message;
